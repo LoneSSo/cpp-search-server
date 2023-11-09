@@ -86,11 +86,11 @@ public:
     explicit SearchServer(const StringContainer& stop_words)
         : stop_words_(MakeUniqueNonEmptyStrings(stop_words)) 
     {
-        for (const auto& word : stop_words_){
-            if (!IsValidDocumentWord(word)){
-                throw invalid_argument("Forbidden symbol(s) in stop-word(s)"s);
-            }
+        if(any_of(stop_words.begin(), stop_words.end(), 
+                    [](const string& word){return !IsValidDocumentWord(word);})){
+            throw invalid_argument("forbidden symbol(s) in stop-word(s)"s);
         }
+
     }
 
     explicit SearchServer(const string& stop_words_text)
@@ -105,13 +105,13 @@ public:
                      const vector<int>& ratings) {
         ids_order.push_back(document_id);
         if (documents_.count(document_id) || document_id < 0){
-            throw invalid_argument("Incorrect ID"s);
+            throw invalid_argument("incorrect ID"s);
         }
 
         const vector<string> words = SplitIntoWordsNoStop(document);
         for (const string& word : words){
             if (!IsValidDocumentWord(word)){
-                throw invalid_argument("Forbidden symbol(s) in document(s)");
+                throw invalid_argument("forbidden symbol(s) in document(s)");
             }
         }
 
@@ -126,24 +126,21 @@ public:
     vector<Document> FindTopDocuments(const string& raw_query,
                                       DocumentPredicate document_predicate) const {
         
-        if (const auto query = ParseQuery(raw_query)){
-            auto matched_documents = FindAllDocuments(*query, document_predicate);
+        Query query = ParseQuery(raw_query);
+        auto matched_documents = FindAllDocuments(query, document_predicate);
 
-            sort(matched_documents.begin(), matched_documents.end(),
-                [](const Document& lhs, const Document& rhs) {
-                    if (abs(lhs.relevance - rhs.relevance) < EPSILON) {
-                        return lhs.rating > rhs.rating;
-                    } 
-                    return lhs.relevance > rhs.relevance;
+        sort(matched_documents.begin(), matched_documents.end(),
+            [](const Document& lhs, const Document& rhs) {
+                if (abs(lhs.relevance - rhs.relevance) < EPSILON) {
+                    return lhs.rating > rhs.rating;
+                } 
+                return lhs.relevance > rhs.relevance;
                     
-                });
-            if (matched_documents.size() > MAX_RESULT_DOCUMENT_COUNT) {
-                matched_documents.resize(MAX_RESULT_DOCUMENT_COUNT);
-            }
-            return matched_documents;
+            });
+        if (matched_documents.size() > MAX_RESULT_DOCUMENT_COUNT) {
+            matched_documents.resize(MAX_RESULT_DOCUMENT_COUNT);
         }
-
-        throw invalid_argument("Incorrect query");
+        return matched_documents;
     }
 
     vector<Document> FindTopDocuments(const string& raw_query, 
@@ -165,39 +162,33 @@ public:
     
     tuple<vector<string>, DocumentStatus> MatchDocument(const string& raw_query, 
                         int document_id) const {
-
-        if (const auto query = ParseQuery(raw_query)){
-            vector<string> matched_words;
-            for (const string& word : query->plus_words) {
-                if (word_to_document_freqs_.count(word) == 0) {
-                    continue;
-                }
-                if (word_to_document_freqs_.at(word).count(document_id)) {
-                    matched_words.push_back(word);
-                }
+        const Query query = ParseQuery(raw_query);                    
+        vector<string> matched_words;
+        for (const string& word : query.plus_words) {
+            if (word_to_document_freqs_.count(word) == 0) {
+                continue;
             }
-            for (const string& word : query->minus_words) {
-                if (word_to_document_freqs_.count(word) == 0) {
-                   continue;
-                }
-                if (word_to_document_freqs_.at(word).count(document_id)) {
-                    matched_words.clear();
-                    break;
-                }
+            if (word_to_document_freqs_.at(word).count(document_id)) {
+                matched_words.push_back(word);
             }
+        }
+        for (const string& word : query.minus_words) {
+            if (word_to_document_freqs_.count(word) == 0) {
+                continue;
+            }
+            if (word_to_document_freqs_.at(word).count(document_id)) {
+                matched_words.clear();
+                break;
+            }
+        }
         tuple<vector<string>, DocumentStatus> result = {matched_words, documents_.at(document_id).status};
         return result;
-        }
-
-        throw invalid_argument("Something wrong with SearchServer::MatchDocument()");
+        
     }
 
 
     int GetDocumentId(int index) const {
-        if (index < 0 || index > ids_order.size()){
-            throw out_of_range("Incorrect index");
-        }
-        return ids_order[index];
+        return ids_order.at(index);
     }
 
 private:
@@ -213,16 +204,6 @@ private:
 
     bool IsStopWord(const string& word) const {
         return stop_words_.count(word) > 0;
-    }
-
-    static bool IsValidQueryWord(const string& word){
-        int size = word.size();
-        if ((size == 1 && word[0] == '-')
-            || (size >= 2 && (word[0] == '-' && word[1] == '-'))
-            || !IsValidDocumentWord(word)){
-                return 0;
-            }
-        return 1;
     }
 
     static bool IsValidDocumentWord(const string& word){
@@ -257,7 +238,17 @@ private:
     };
 
     QueryWord ParseQueryWord(string text) const {
-        bool is_minus = false;
+        int size = text.size();
+        if (size == 1 && text[0] == '-'){
+            throw invalid_argument("only \"-\" word"s);
+        }
+        if (size >= 2 && (text[0] == '-' && text[1] == '-')){
+            throw invalid_argument("\"--\" in fornt of word: "s + text);
+        }
+        if (!IsValidDocumentWord(text)){
+            throw invalid_argument("forbidden symbol in word:"s + text);
+        }
+        bool is_minus = false;       
         // Word shouldn't be empty
         if (text[0] == '-') {
             is_minus = true;
@@ -271,12 +262,9 @@ private:
         set<string> minus_words;
     };
 
-   optional<Query> ParseQuery(const string& text) const {
+    Query ParseQuery(const string& text) const {
         Query query;
         for (const string& word : SplitIntoWords(text)) {
-            if(!IsValidQueryWord(word)){
-                return nullopt;
-            }
             const QueryWord query_word = ParseQueryWord(word);
             if (!query_word.is_stop) {
                 if (query_word.is_minus) {
@@ -362,7 +350,8 @@ int main() {
         search_server.AddDocument(1, "пушистый кот пушистый хвост"s,       DocumentStatus::ACTUAL, {7, 2, 7});
         search_server.AddDocument(2, "ухоженный пёс выразительные глаза"s, DocumentStatus::ACTUAL, {5, -12, 2, 1});
         search_server.AddDocument(3, "ухоженный скворец евгений"s,         DocumentStatus::BANNED, {9});
-
+        
+        //search_server.GetDocumentId(7);
         //search_server.FindTopDocuments(GetForbiddenQuery());
 
         cout << "ACTUAL by default:"s << endl;
@@ -381,7 +370,9 @@ int main() {
         return 0; 
 
     } catch(const invalid_argument& argument) {
-        cout << "Look, we have an imposter "s << argument.what();
+        cout << "Look, we have an imposter: "s << argument.what();
+    } catch(const out_of_range& argument) {
+        cout << "Look, we have an imposter: "s << argument.what();
     }
 
 }  
