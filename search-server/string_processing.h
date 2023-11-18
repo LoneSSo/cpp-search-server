@@ -7,6 +7,11 @@
 std::vector<std::string> SplitIntoWords(const std::string& text);
 
 template <typename StringContainer>
+std::set<std::string> MakeUniqueNonEmptyStrings(const StringContainer& strings);
+
+//====================================================//
+
+template <typename StringContainer>
 std::set<std::string> MakeUniqueNonEmptyStrings(const StringContainer& strings) {
     using namespace std;
     set<string> non_empty_strings;
